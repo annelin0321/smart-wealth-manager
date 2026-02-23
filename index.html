@@ -1,0 +1,1342 @@
+import React, { useState, useMemo, useEffect } from 'react';
+import { Plus, Trash2, Save, Calendar, DollarSign, Wallet, TrendingUp, History, ArrowRight, AlertCircle, CheckCircle2, HelpCircle, FileText, ArrowLeft, ClipboardList, Activity, LayoutDashboard, CheckSquare, Square, ShieldAlert, Gift, Cloud, PiggyBank, PieChart, BookOpen, Download, Calculator, CreditCard } from 'lucide-react';
+import { initializeApp } from 'firebase/app';
+import { getAuth, signInWithCustomToken, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
+import { getFirestore, doc, setDoc, getDoc, collection, onSnapshot, deleteDoc } from 'firebase/firestore';
+
+// ==========================================
+// Firebase 初始化
+// ==========================================
+let app, auth, db;
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+
+try {
+  const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : null;
+  if (firebaseConfig) {
+    app = initializeApp(firebaseConfig);
+    auth = getAuth(app);
+    db = getFirestore(app);
+  }
+} catch (error) {
+  console.error("Firebase init failed:", error);
+}
+
+// ==========================================
+// 共用表格元件
+// ==========================================
+const SelectableTable = ({ title, items, setter, colorClass, handleUpdate, handleDelete, handleAdd }) => (
+  <div className={`bg-white rounded-xl shadow-sm border ${colorClass} overflow-hidden flex flex-col`}>
+    <div className={`px-4 py-2 font-bold text-center border-b ${colorClass.replace('border-', 'bg-').replace('-200', '-100')} text-gray-800`}>
+      {title}
+    </div>
+    <div className="flex bg-gray-50 border-b border-gray-200 text-xs font-semibold text-gray-500">
+      <div className="w-2/5 p-2 text-center border-r border-gray-200">支出項目</div>
+      <div className="w-2/5 p-2 text-center border-r border-gray-200">預估金額</div>
+      <div className="w-1/5 p-2 text-center">計入底線</div>
+    </div>
+    <div className="flex-1 p-2 space-y-2">
+      {items.map(item => (
+        <div key={item.id} className="flex items-center gap-2 group relative">
+          <input type="text" value={item.name} onChange={e => handleUpdate(setter, item.id, 'name', e.target.value)} className="w-2/5 p-1.5 text-sm border rounded focus:ring-1 bg-transparent" placeholder="項目"/>
+          <input type="number" value={item.amount} onChange={e => handleUpdate(setter, item.id, 'amount', e.target.value)} className="w-2/5 p-1.5 text-sm border rounded focus:ring-1 bg-transparent text-center" placeholder="金額"/>
+          <button onClick={() => handleUpdate(setter, item.id, 'included', !item.included)} className={`w-1/5 flex justify-center items-center transition-colors ${item.included ? 'text-pink-600' : 'text-gray-300 hover:text-pink-300'}`}>
+            {item.included ? <CheckSquare size={20}/> : <Square size={20}/>}
+          </button>
+          <button onClick={() => handleDelete(setter, item.id)} className="absolute -left-6 opacity-0 group-hover:opacity-100 text-red-400 hover:text-red-600 transition-opacity"><Trash2 size={14}/></button>
+        </div>
+      ))}
+      <button onClick={() => handleAdd(setter)} className="w-full py-1.5 text-xs text-gray-400 hover:text-pink-600 bg-gray-50 rounded transition-colors flex justify-center items-center gap-1"><Plus size={14}/> 新增項目</button>
+    </div>
+  </div>
+);
+
+const StatusRow = ({ label, value, onChange, placeholder = "-" }) => (
+  <div className="flex border-b border-purple-100 last:border-0 bg-white group">
+    <div className="w-[45%] md:w-1/2 p-2 bg-purple-50/50 text-gray-700 font-semibold text-xs md:text-sm flex items-center justify-center border-r border-purple-100 text-center tracking-wide">{label}</div>
+    <div className="w-[55%] md:w-1/2 p-1">
+      <input type="text" value={value} onChange={e => onChange(e.target.value)} className="w-full p-1 text-center text-sm border-0 focus:ring-2 focus:ring-purple-300 rounded text-gray-700 font-bold" placeholder={placeholder} />
+    </div>
+  </div>
+);
+
+const ArrayTable = ({ title, columns, items, setter, totalLabel, totalValue, defaultNewObj, handleUpdateArr, handleDelArr, handleAddArr }) => (
+  <div className="border border-gray-200 rounded-lg overflow-hidden flex flex-col bg-white shadow-sm hover:shadow-md transition-shadow">
+    <div className="bg-gray-100 px-4 py-2 font-bold text-gray-800 text-center border-b border-gray-200 text-sm md:text-base">{title}</div>
+    <div className="flex bg-gray-50 border-b border-gray-200 text-xs font-semibold text-gray-500">
+       {columns.map((col, i) => <div key={i} className={`p-2 text-center border-r border-gray-200 last:border-0 ${col.width}`}>{col.label}</div>)}
+    </div>
+    <div className="flex-1">
+       {items.map((item) => (
+         <div key={item.id} className="flex border-b border-gray-100 last:border-0 group relative hover:bg-purple-50/30">
+           {columns.map((col, i) => (
+              <div key={i} className={`p-1 border-r border-gray-100 last:border-0 flex items-center justify-center ${col.width}`}>
+                 {col.render(item, (val) => handleUpdateArr(setter, item.id, col.field, val))}
+              </div>
+           ))}
+           <button onClick={() => handleDelArr(setter, item.id)} className="absolute -right-6 md:-right-8 top-1/2 -translate-y-1/2 p-1 text-red-400 hover:text-red-600 opacity-0 group-hover:opacity-100 transition-opacity"><Trash2 size={14}/></button>
+         </div>
+       ))}
+    </div>
+    <div className="p-1 border-b border-gray-100">
+       <button onClick={() => handleAddArr(setter, defaultNewObj)} className="w-full py-1.5 text-xs text-gray-400 hover:text-purple-600 hover:bg-purple-50 rounded transition-colors flex items-center justify-center gap-1"><Plus size={14} /> 新增列</button>
+    </div>
+    {totalLabel && (
+       <div className="flex bg-purple-50 font-bold text-sm">
+          <div className="flex-1 p-2 text-center text-purple-800 border-r border-purple-100">{totalLabel}</div>
+          <div className="flex-1 p-2 text-center text-purple-800">${totalValue.toLocaleString()}</div>
+       </div>
+    )}
+  </div>
+);
+
+const ExpenseTable = ({ title, items, setter, total, icon: Icon, colorClass, handleUpdateItem, handleDeleteItem, handleAddItem, accounts }) => (
+  <div className={`bg-white rounded-xl shadow-sm border ${colorClass} overflow-hidden`}>
+    <div className={`px-4 py-3 border-b flex items-center justify-between ${colorClass.replace('border-', 'bg-').replace('-200', '-50')}`}>
+      <h3 className="font-bold flex items-center gap-2 text-gray-800"><Icon size={18} className="text-gray-600" />{title}</h3>
+      <span className="font-bold text-gray-800">${total.toLocaleString()}</span>
+    </div>
+    <div className="p-2">
+      {items.map((item) => (
+        <div key={item.id} className="flex gap-2 mb-2 items-center">
+          <input type="text" placeholder="項目名稱" value={item.name} onChange={(e) => handleUpdateItem(setter, item.id, 'name', e.target.value)} className="flex-1 p-2 text-sm border rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-300"/>
+          
+          <select 
+            value={item.account || ''} 
+            onChange={(e) => handleUpdateItem(setter, item.id, 'account', e.target.value)} 
+            className="w-24 md:w-32 p-2 text-sm border rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-300 bg-white text-gray-700"
+          >
+            <option value="" className="text-gray-400">請選擇帳戶</option>
+            {accounts.map(acc => <option key={acc.id} value={acc.name}>{acc.name}</option>)}
+          </select>
+
+          <input type="number" placeholder="金額" value={item.amount === 0 ? 0 : (item.amount || '')} onChange={(e) => handleUpdateItem(setter, item.id, 'amount', e.target.value === '' ? '' : Number(e.target.value))} className="w-24 p-2 text-sm border rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-300"/>
+          <button onClick={() => handleDeleteItem(setter, item.id)} className="p-2 text-red-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"><Trash2 size={16} /></button>
+        </div>
+      ))}
+      <button onClick={() => handleAddItem(setter)} className="w-full py-2 mt-1 text-sm text-gray-500 hover:text-purple-600 hover:bg-purple-50 rounded-lg flex items-center justify-center gap-1 transition-colors"><Plus size={16} /> 新增項目</button>
+    </div>
+  </div>
+);
+
+const MasterDebtTable = ({ masterDebts, setMasterDebts, setDebts, setFixedExpenses, handleUpdateItem, handleDeleteItem, handleAddItem, totalMasterDebt, accounts }) => (
+  <div className="bg-white rounded-xl shadow-sm border border-orange-200 overflow-hidden mb-6">
+    <div className="px-4 py-3 border-b bg-orange-50 flex items-center justify-between">
+      <div className="flex flex-col">
+        <h3 className="font-bold flex items-center gap-2 text-gray-800"><ClipboardList size={18} className="text-gray-600" />定期扣款與債務清單 (自動分流)</h3>
+        <span className="text-xs text-gray-500 mt-1">＊列出所有定期扣款，點選右側「入負債」或「入固定」自動分配至下方區塊。</span>
+      </div>
+      <div className="text-right">
+        <div className="text-xs text-gray-500">總計</div>
+        <span className="font-bold text-gray-800">${totalMasterDebt.toLocaleString()}</span>
+      </div>
+    </div>
+    <div className="p-2 overflow-x-auto">
+      <table className="w-full text-sm text-left min-w-[650px]">
+        <thead className="text-xs text-gray-500 bg-gray-50">
+          <tr>
+            <th className="px-2 py-2 w-[22%]">項目</th><th className="px-2 py-2 w-[18%]">扣款帳戶</th><th className="px-2 py-2 w-[15%]">每月應繳</th><th className="px-2 py-2 w-[15%]">備註 (如:期數)</th><th className="px-2 py-2 w-[12%]">扣款日</th><th className="px-2 py-2 text-center">分配 / 刪除</th>
+          </tr>
+        </thead>
+        <tbody>
+          {masterDebts.map((item) => (
+            <tr key={item.id} className="border-b border-gray-50 last:border-0 hover:bg-orange-50/30">
+              <td className="px-1 py-1"><input type="text" placeholder="項目名稱" value={item.name} onChange={(e) => handleUpdateItem(setMasterDebts, item.id, 'name', e.target.value)} className="w-full p-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-300 bg-transparent" /></td>
+              
+              <td className="px-1 py-1">
+                <select value={item.account || ''} onChange={(e) => handleUpdateItem(setMasterDebts, item.id, 'account', e.target.value)} className="w-full p-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-300 bg-white text-gray-700">
+                  <option value="" className="text-gray-400">請選擇</option>
+                  {accounts.map(acc => <option key={acc.id} value={acc.name}>{acc.name}</option>)}
+                </select>
+              </td>
+
+              <td className="px-1 py-1"><input type="number" placeholder="金額" value={item.amount === 0 ? 0 : (item.amount || '')} onChange={(e) => handleUpdateItem(setMasterDebts, item.id, 'amount', e.target.value === '' ? '' : Number(e.target.value))} className="w-full p-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-300 bg-transparent" /></td>
+              <td className="px-1 py-1"><input type="text" placeholder="備註" value={item.note || ''} onChange={(e) => handleUpdateItem(setMasterDebts, item.id, 'note', e.target.value)} className="w-full p-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-300 bg-transparent" /></td>
+              <td className="px-1 py-1"><input type="text" placeholder="繳款日" value={item.dueDate || ''} onChange={(e) => handleUpdateItem(setMasterDebts, item.id, 'dueDate', e.target.value)} className="w-full p-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-300 bg-transparent" /></td>
+              <td className="px-1 py-1 flex justify-center items-center gap-1">
+                <button onClick={() => { if(!item.name && !item.amount) return; setDebts(prev => [...prev.filter(i=>i.name||i.amount), { id: Date.now(), name: item.name, amount: item.amount, account: item.account }]); setMasterDebts(prev => prev.filter(d => d.id !== item.id)); }} className="px-2 py-1 text-xs bg-red-100 text-red-600 hover:bg-red-200 rounded font-bold transition-colors whitespace-nowrap">入負債</button>
+                <button onClick={() => { if(!item.name && !item.amount) return; setFixedExpenses(prev => [...prev.filter(i=>i.name||i.amount), { id: Date.now(), name: item.name, amount: item.amount, account: item.account }]); setMasterDebts(prev => prev.filter(d => d.id !== item.id)); }} className="px-2 py-1 text-xs bg-blue-100 text-blue-600 hover:bg-blue-200 rounded font-bold transition-colors whitespace-nowrap">入固定</button>
+                <button onClick={() => handleDeleteItem(setMasterDebts, item.id)} className="p-1 text-gray-400 hover:text-red-600 rounded transition-colors"><Trash2 size={16} /></button>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <button onClick={() => handleAddItem(setMasterDebts, { name: '', amount: 0, note: '', dueDate: '', account: '' })} className="w-full py-2 mt-2 text-sm text-gray-500 hover:text-orange-600 hover:bg-orange-50 rounded-lg flex items-center justify-center gap-1 transition-colors"><Plus size={16} /> 新增項目</button>
+    </div>
+  </div>
+);
+
+// === 系統使用說明元件 ===
+const InstructionsView = () => (
+  <div className="bg-white rounded-2xl shadow-sm border border-gray-200 p-6 md:p-10 space-y-8">
+    <div className="text-center mb-8">
+      <h2 className="text-2xl md:text-3xl font-bold text-gray-800 tracking-wider flex justify-center items-center gap-2">
+        <BookOpen className="text-purple-600" size={28}/> 系統操作與理財指南
+      </h2>
+      <p className="text-gray-500 mt-2">協助您建立穩健的個人與家庭財務系統</p>
+    </div>
+
+    <div className="space-y-6 text-gray-700 leading-relaxed">
+      <section className="bg-blue-50 p-5 rounded-xl border border-blue-100">
+        <h3 className="text-lg font-bold text-blue-900 mb-3 flex items-center gap-2"><CreditCard size={20}/> 1. 建立帳戶總表 (新功能)</h3>
+        <ul className="list-disc list-inside space-y-2 ml-2">
+          <li><strong>集中化管理：</strong>請先前往「帳戶總表」分頁，將您所有的存款銀行、電子支付(LinePay/悠遊卡)、股票戶頭、甚至押金與應收款建立上去，並填入目前的真實餘額。</li>
+          <li><strong>自動連動：</strong>建立好後，其他分頁的表格都會自動長出下拉選單讓您點選，再也不用手動輸入帳戶名稱！</li>
+        </ul>
+      </section>
+
+      <section className="bg-purple-50 p-5 rounded-xl border border-purple-100">
+        <h3 className="text-lg font-bold text-purple-900 mb-3 flex items-center gap-2"><LayoutDashboard size={20}/> 2. 每月預算分配</h3>
+        <ul className="list-disc list-inside space-y-2 ml-2">
+          <li><strong>虛擬信封法：</strong>填寫各項收支時，透過下拉選單指定資金流動的帳戶。系統會在左下方自動幫您計算每個帳戶的「預計淨變動」與「結算後的即時餘額」。</li>
+          <li><strong>核心分配邏輯：</strong>系統採用零基預算概念，以「總收入 - 負債 - 固定支出 - 投資理財 = 可用資金」，並依據您設定的儲蓄比例，自動計算出「本月應存金額」與剩餘的「生活費額度」。</li>
+        </ul>
+      </section>
+
+      <section className="bg-pink-50 p-5 rounded-xl border border-pink-100">
+        <h3 className="text-lg font-bold text-pink-900 mb-3 flex items-center gap-2"><ShieldAlert size={20}/> 3. 財務安全網 (預備金試算)</h3>
+        <ul className="list-disc list-inside space-y-2 ml-2">
+          <li><strong>評估最低生活底線：</strong>列出日常開銷後，<strong>僅勾選「不可中斷」與「維持基本生活必需」</strong>的項目。</li>
+          <li><strong>自動試算目標：</strong>系統會依據勾選項目計算「每月基本生活底線」，並自動推算出 6 個月的安全準備金目標金額。</li>
+        </ul>
+      </section>
+
+      <section className="bg-yellow-50 p-5 rounded-xl border border-yellow-100">
+        <h3 className="text-lg font-bold text-yellow-900 mb-3 flex items-center gap-2"><Gift size={20}/> 4. 額外收入 / 獎金規劃</h3>
+        <ul className="list-disc list-inside space-y-2 ml-2">
+          <li><strong>無縫匯入主表：</strong>規劃完成後，點擊「匯入本月預算表」，系統會將獎金轉為專款專用項目自動扣除，確保不會干擾您日常的生活費比例。</li>
+        </ul>
+      </section>
+
+      <section className="bg-indigo-50 p-5 rounded-xl border border-indigo-100">
+        <h3 className="text-lg font-bold text-indigo-900 mb-3 flex items-center gap-2"><Activity size={20}/> 5. 財務追蹤與歷史紀錄</h3>
+        <ul className="list-disc list-inside space-y-2 ml-2">
+          <li><strong>資產負債盤點：</strong>在「財務追蹤」中填寫期初與期末餘額，系統會自動結算本期的「淨資產成長」。</li>
+          <li><strong>區間收支自動加總：</strong>利用上方的「自動結算區間資料」工具，選擇月份後，系統會自動幫您將歷史結算紀錄的數字加總並填入右側表格中！</li>
+          <li><strong>無限次存檔：</strong>所有分頁皆支援無限次存檔與隨時載入舊紀錄。</li>
+        </ul>
+      </section>
+    </div>
+  </div>
+);
+
+// === 緊急預備金計算元件 ===
+const EmergencyFundView = ({ db, user, appId }) => {
+  const [isLoaded, setIsLoaded] = useState(false);
+  const [recordName, setRecordName] = useState(() => `${new Date().getFullYear()} 預備金評估`);
+  const [savedRecords, setSavedRecords] = useState([]);
+
+  const [fixed, setFixed] = useState([{ id: 1, name: '', amount: '', included: false }]);
+  const [saving, setSaving] = useState([{ id: 1, name: '', amount: '', included: false }]);
+  const [living, setLiving] = useState([{ id: 1, name: '', amount: '', included: false }]);
+  const [shortDebt, setShortDebt] = useState([{ id: 1, name: '', amount: '', included: false }]);
+  const [longDebt, setLongDebt] = useState([{ id: 1, name: '', amount: '', included: false }]);
+
+  useEffect(() => {
+    if (!user || !db) { setIsLoaded(true); return; }
+    const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'emergency');
+    getDoc(docRef).then(snap => {
+      if (snap.exists()) {
+        const data = snap.data();
+        if (data.recordName) setRecordName(data.recordName);
+        if (data.fixed) setFixed(JSON.parse(data.fixed));
+        if (data.saving) setSaving(JSON.parse(data.saving));
+        if (data.living) setLiving(JSON.parse(data.living));
+        if (data.shortDebt) setShortDebt(JSON.parse(data.shortDebt));
+        if (data.longDebt) setLongDebt(JSON.parse(data.longDebt));
+      }
+      setIsLoaded(true);
+    }).catch(() => setIsLoaded(true));
+
+    const recordsRef = collection(db, 'artifacts', appId, 'users', user.uid, 'emergencyRecords');
+    const unsubscribe = onSnapshot(recordsRef, (snap) => {
+      const records = [];
+      snap.forEach(d => records.push({ id: d.id, ...d.data() }));
+      records.sort((a, b) => b.timestamp - a.timestamp);
+      setSavedRecords(records);
+    }, (err) => console.error(err));
+    return () => unsubscribe();
+  }, [user, db, appId]);
+
+  useEffect(() => {
+    if (!isLoaded || !user || !db) return;
+    const timer = setTimeout(() => {
+      const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'emergency');
+      setDoc(docRef, { recordName, fixed: JSON.stringify(fixed), saving: JSON.stringify(saving), living: JSON.stringify(living), shortDebt: JSON.stringify(shortDebt), longDebt: JSON.stringify(longDebt) });
+    }, 1500);
+    return () => clearTimeout(timer);
+  }, [recordName, fixed, saving, living, shortDebt, longDebt, isLoaded, user, db, appId]);
+
+  const handleUpdate = (setter, id, field, value) => setter(prev => prev.map(item => item.id === id ? { ...item, [field]: value } : item));
+  const handleAdd = (setter) => setter(prev => [...prev, { id: Date.now(), name: '', amount: '', included: false }]);
+  const handleDelete = (setter, id) => setter(prev => prev.filter(item => item.id !== id));
+
+  const sumIncluded = (arr) => arr.filter(item => item.included).reduce((sum, item) => sum + (Number(item.amount) || 0), 0);
+  const sumFixed = sumIncluded(fixed);
+  const sumLiving = sumIncluded(living);
+  const sumLongDebt = sumIncluded(longDebt);
+  const monthStandard = sumFixed + sumLiving + sumLongDebt;
+  const halfYearGoal = monthStandard * 6;
+
+  const saveRecord = async () => {
+    if (!recordName.trim()) return alert("請輸入評估名稱");
+    if (savedRecords.some(r => r.recordName === recordName)) {
+      if (!window.confirm(`${recordName} 的紀錄已存在，確定要覆蓋嗎？`)) return;
+    }
+    const newRecord = { recordName, fixed: JSON.stringify(fixed), saving: JSON.stringify(saving), living: JSON.stringify(living), shortDebt: JSON.stringify(shortDebt), longDebt: JSON.stringify(longDebt), timestamp: Date.now(), halfYearGoal, monthStandard };
+    if (user && db) {
+      const existing = savedRecords.find(r => r.recordName === recordName);
+      const colRef = collection(db, 'artifacts', appId, 'users', user.uid, 'emergencyRecords');
+      try {
+        if (existing) await setDoc(doc(colRef, existing.id), newRecord);
+        else await setDoc(doc(colRef, `${recordName}-${Date.now()}`), newRecord);
+      } catch (e) { console.error(e); }
+    } else {
+      setSavedRecords(prev => [...prev.filter(r => r.recordName !== recordName), { id: Date.now(), ...newRecord }].sort((a,b) => b.timestamp - a.timestamp));
+    }
+  };
+
+  const loadRecord = (record) => {
+    if(!window.confirm(`確定要載入「${record.recordName}」嗎？\n這將覆蓋目前畫面上未儲存的資料。`)) return;
+    setRecordName(record.recordName); setFixed(JSON.parse(record.fixed)); setSaving(JSON.parse(record.saving)); setLiving(JSON.parse(record.living)); setShortDebt(JSON.parse(record.shortDebt)); setLongDebt(JSON.parse(record.longDebt));
+  };
+
+  const deleteRecord = async (id) => {
+    if (user && db) {
+      try { await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'emergencyRecords', id.toString())); } catch(e) { console.error(e); }
+    } else { setSavedRecords(prev => prev.filter(r => r.id !== id)); }
+  };
+
+  return (
+    <div className="bg-white rounded-2xl shadow-sm border border-pink-100 p-4 md:p-8 space-y-6">
+      <div className="text-center mb-6">
+         <h2 className="text-2xl md:text-3xl font-bold text-pink-900 tracking-wider flex justify-center items-center gap-2">
+           <ShieldAlert className="text-pink-500" size={28}/> 財務安全網 (預備金試算)
+         </h2>
+         <p className="text-pink-600 text-sm mt-2">評估每月必須的最低開銷，建構穩健的財務防護網</p>
+      </div>
+
+      <div className="flex flex-wrap gap-4 bg-pink-50 p-4 rounded-xl border border-pink-200 shadow-sm">
+        <div className="flex-1 min-w-[200px]">
+          <label className="block text-sm font-bold text-pink-900 mb-2 flex items-center gap-1"><Calendar size={18} /> 預備金評估名稱</label>
+          <input type="text" value={recordName} onChange={(e) => setRecordName(e.target.value)} placeholder="例如：2026年度預備金、換工作後評估" className="w-full p-2.5 border border-pink-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-pink-400 font-semibold text-gray-800" />
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 md:gap-6">
+        <SelectableTable title="固定支出" items={fixed} setter={setFixed} colorClass="border-blue-200" handleUpdate={handleUpdate} handleDelete={handleDelete} handleAdd={handleAdd} />
+        <SelectableTable title="儲蓄與投資" items={saving} setter={setSaving} colorClass="border-green-200" handleUpdate={handleUpdate} handleDelete={handleDelete} handleAdd={handleAdd} />
+        <SelectableTable title="變動生活費" items={living} setter={setLiving} colorClass="border-orange-200" handleUpdate={handleUpdate} handleDelete={handleDelete} handleAdd={handleAdd} />
+        <div className="flex flex-col gap-4 md:gap-6">
+          <SelectableTable title="短期負債 (1年內結清)" items={shortDebt} setter={setShortDebt} colorClass="border-red-200" handleUpdate={handleUpdate} handleDelete={handleDelete} handleAdd={handleAdd} />
+          <SelectableTable title="長期負債 (如：房貸/學貸/信貸)" items={longDebt} setter={setLongDebt} colorClass="border-purple-200" handleUpdate={handleUpdate} handleDelete={handleDelete} handleAdd={handleAdd} />
+        </div>
+      </div>
+
+      <div className="mt-8 bg-pink-50 rounded-xl p-6 border border-pink-200">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+          <div className="space-y-4 border-b md:border-b-0 md:border-r border-pink-200 pb-4 md:pb-0 md:pr-6">
+            <h3 className="font-bold text-pink-900 text-lg border-b border-pink-200 pb-2">每月基本生活底線</h3>
+            <div className="flex justify-between items-center text-gray-700"><span>固定支出 (有勾選)</span><span>${sumFixed.toLocaleString()}</span></div>
+            <div className="flex justify-between items-center text-gray-700"><span>生活開銷 (有勾選)</span><span>${sumLiving.toLocaleString()}</span></div>
+            <div className="flex justify-between items-center text-gray-700 border-b border-pink-200 pb-2"><span>債務還款 (有勾選)</span><span>${sumLongDebt.toLocaleString()}</span></div>
+            <div className="flex justify-between items-center font-bold text-xl text-pink-700"><span>最低需求總計</span><span>${monthStandard.toLocaleString()}</span></div>
+          </div>
+          <div className="flex flex-col justify-center space-y-4">
+             <div className="bg-white p-4 rounded-lg shadow-sm border border-pink-100">
+               <div className="text-sm text-gray-500 font-bold mb-1">計算評估準則建議：</div>
+               <ol className="text-xs text-gray-600 list-decimal list-inside space-y-1">
+                 <li><span className="text-red-500 font-bold">不可中斷</span>的固定支出（如房貸、租金、基本保險）</li>
+                 <li><span className="text-red-500 font-bold">維持生存</span>的必要開銷（如基本伙食費、通勤費）</li>
+                 <li>非急迫性的娛樂、購物或投資項目建議取消勾選</li>
+                 <li>目標準備金建議存放在高流動性的活存帳戶中</li>
+               </ol>
+             </div>
+             <div className="bg-pink-600 text-white p-4 rounded-xl shadow-md text-center">
+               <div className="text-pink-100 text-sm mb-1">每月最低需求 ${monthStandard.toLocaleString()} × 6個月 =</div>
+               <div className="text-2xl md:text-3xl font-black tracking-wide flex items-center justify-center gap-2">
+                 半年安全預備金 ${halfYearGoal.toLocaleString()}
+               </div>
+             </div>
+          </div>
+        </div>
+      </div>
+
+      <button onClick={saveRecord} className="w-full py-4 bg-pink-500 hover:bg-pink-600 text-white font-bold text-lg rounded-xl shadow-md flex justify-center items-center gap-2 transition-colors mt-8">
+        <Save size={24} /> 儲存「{recordName}」評估紀錄
+      </button>
+
+      {savedRecords.length > 0 && (
+        <div className="bg-white p-5 rounded-xl shadow-sm border border-pink-200 mt-8">
+          <h2 className="text-lg font-bold text-gray-800 mb-4 flex items-center gap-2 border-b pb-2"><History size={20} className="text-pink-600"/>歷史預備金評估紀錄</h2>
+          <div className="space-y-3">
+            {savedRecords.map(record => (
+              <div key={record.id} className="p-4 border rounded-lg bg-gray-50 flex flex-col md:flex-row justify-between items-start md:items-center gap-4 group hover:border-pink-300 transition-colors">
+                <div>
+                  <span className="font-bold text-pink-800 text-lg">{record.recordName}</span>
+                  <div className="text-sm text-gray-500 mt-1">建檔時間: {new Date(record.timestamp).toLocaleDateString()}</div>
+                  <div className="text-sm font-bold text-pink-600 mt-1">目標金額: ${(record.halfYearGoal || 0).toLocaleString()}</div>
+                </div>
+                <div className="flex items-center gap-3 w-full md:w-auto">
+                  <button onClick={() => loadRecord(record)} className="flex-1 md:flex-none px-4 py-2 bg-white border border-pink-300 text-pink-700 text-sm font-bold rounded-lg hover:bg-pink-100 transition-colors flex items-center justify-center gap-1"><Download size={16}/> 載入</button>
+                  <button onClick={() => deleteRecord(record.id)} className="p-2 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors"><Trash2 size={20} /></button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+// === 年終/獎金分配元件 ===
+const BonusAllocationView = ({ db, user, appId, onImport }) => {
+  const [isLoaded, setIsLoaded] = useState(false);
+  const [recordName, setRecordName] = useState(() => `${new Date().getFullYear()} 獎金規劃`);
+  const [savedRecords, setSavedRecords] = useState([]);
+  
+  const [bonusAmount, setBonusAmount] = useState('');
+  const [status, setStatus] = useState('has_debt'); 
+  const [allocations, setAllocations] = useState([]);
+
+  useEffect(() => {
+    if (!user || !db) { setIsLoaded(true); return; }
+    const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'bonus');
+    getDoc(docRef).then(snap => {
+      if (snap.exists()) {
+        const data = snap.data();
+        if (data.recordName) setRecordName(data.recordName);
+        if (data.bonusAmount !== undefined) setBonusAmount(data.bonusAmount);
+        if (data.status) setStatus(data.status);
+        if (data.allocations) setAllocations(JSON.parse(data.allocations));
+      }
+      setIsLoaded(true);
+    }).catch(() => setIsLoaded(true));
+
+    const recordsRef = collection(db, 'artifacts', appId, 'users', user.uid, 'bonusRecords');
+    const unsubscribe = onSnapshot(recordsRef, (snap) => {
+      const records = [];
+      snap.forEach(d => records.push({ id: d.id, ...d.data() }));
+      records.sort((a, b) => b.timestamp - a.timestamp);
+      setSavedRecords(records);
+    }, (err) => console.error(err));
+    return () => unsubscribe();
+  }, [user, db, appId]);
+
+  useEffect(() => {
+    if (!isLoaded) return;
+    let template = [];
+    if (status === 'has_debt') {
+      template = [
+        { id: 1, name: '加速清償債務', desc: '優先處理高息負債(如卡債/信貸)', amount: '' },
+        { id: 2, name: '預留年度支出', desc: '年度保費、稅金預算', amount: '' },
+        { id: 3, name: '適度自我犒賞', desc: '提撥小比例作為獎勵，避免報復性消費', amount: '' },
+        { id: 4, name: '轉入儲蓄', desc: '剩餘資金轉入存款', amount: '' },
+      ];
+    } else if (status === 'no_ef') {
+      template = [
+        { id: 1, name: '建立安全存款', desc: '優先補足緊急預備金', amount: '' },
+        { id: 2, name: '預留年度支出', desc: '年度保費、稅金預算', amount: '' },
+        { id: 3, name: '適度自我犒賞', desc: '提撥合理比例作為生活調劑', amount: '' },
+      ];
+    } else if (status === 'has_ef') {
+      template = [
+        { id: 1, name: '擴大資產投資', desc: '轉入投資帳戶加速資產累積', amount: '' },
+        { id: 2, name: '大筆預算準備', desc: '旅遊基金、大型採購', amount: '' },
+        { id: 3, name: '自我投資與獎勵', desc: '進修課程或個人犒賞', amount: '' },
+      ];
+    }
+    if (allocations.length === 0 || allocations[0]?.name !== template[0].name) {
+      setAllocations(template);
+    }
+  }, [status, isLoaded]);
+
+  useEffect(() => {
+    if (!isLoaded || !user || !db) return;
+    const timer = setTimeout(() => {
+      const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'bonus');
+      setDoc(docRef, { recordName, bonusAmount, status, allocations: JSON.stringify(allocations) });
+    }, 1500);
+    return () => clearTimeout(timer);
+  }, [recordName, bonusAmount, status, allocations, isLoaded, user, db, appId]);
+
+  const saveRecord = async () => {
+    if (!recordName.trim()) return alert("請輸入規劃名稱");
+    if (savedRecords.some(r => r.recordName === recordName)) {
+      if (!window.confirm(`${recordName} 的紀錄已存在，確定要覆蓋嗎？`)) return;
+    }
+    const newRecord = { recordName, bonusAmount, status, allocations: JSON.stringify(allocations), timestamp: Date.now() };
+    if (user && db) {
+      const existing = savedRecords.find(r => r.recordName === recordName);
+      const colRef = collection(db, 'artifacts', appId, 'users', user.uid, 'bonusRecords');
+      try {
+        if (existing) await setDoc(doc(colRef, existing.id), newRecord);
+        else await setDoc(doc(colRef, `${recordName}-${Date.now()}`), newRecord);
+      } catch (e) { console.error(e); }
+    } else {
+      setSavedRecords(prev => [...prev.filter(r => r.recordName !== recordName), { id: Date.now(), ...newRecord }].sort((a,b) => b.timestamp - a.timestamp));
+    }
+  };
+
+  const loadRecord = (record) => {
+    if(!window.confirm(`確定要載入「${record.recordName}」嗎？\n這將覆蓋目前畫面上未儲存的資料。`)) return;
+    setRecordName(record.recordName); setBonusAmount(record.bonusAmount); setStatus(record.status); setAllocations(JSON.parse(record.allocations));
+  };
+
+  const deleteRecord = async (id) => {
+    if (user && db) {
+      try { await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'bonusRecords', id.toString())); } catch(e) { console.error(e); }
+    } else { setSavedRecords(prev => prev.filter(r => r.id !== id)); }
+  };
+
+  const handleUpdateAlloc = (id, value) => {
+    setAllocations(prev => prev.map(item => item.id === id ? { ...item, amount: value } : item));
+  };
+
+  const totalAllocated = allocations.reduce((sum, item) => sum + (Number(item.amount) || 0), 0);
+  const remaining = Number(bonusAmount || 0) - totalAllocated;
+
+  return (
+    <div className="bg-white rounded-2xl shadow-sm border border-yellow-200 p-4 md:p-8 space-y-6">
+      <div className="text-center mb-6">
+         <h2 className="text-2xl md:text-3xl font-bold text-yellow-900 tracking-wider flex justify-center items-center gap-2">
+           <Gift className="text-yellow-500" size={28}/> 額外收入 / 獎金規劃
+         </h2>
+         <p className="text-yellow-700 text-sm mt-2">根據您目前的財務階段，提供最佳化的資金分配策略</p>
+      </div>
+
+      <div className="flex flex-wrap gap-4 bg-yellow-50 p-4 rounded-xl border border-yellow-200 shadow-sm">
+        <div className="flex-1 min-w-[200px]">
+          <label className="block text-sm font-bold text-yellow-900 mb-2 flex items-center gap-1"><Calendar size={18} /> 獎金規劃名稱</label>
+          <input type="text" value={recordName} onChange={(e) => setRecordName(e.target.value)} placeholder="例如：2026中秋獎金、Q3績效獎金" className="w-full p-2.5 border border-yellow-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-yellow-400 font-semibold text-gray-800" />
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-12 gap-6">
+        <div className="md:col-span-5 space-y-6">
+          <div className="bg-yellow-50 p-5 rounded-xl border border-yellow-200">
+            <label className="block text-sm font-bold text-yellow-800 mb-2">💰 總計獎金 / 額外收入金額</label>
+            <input type="number" value={bonusAmount} onChange={e => setBonusAmount(e.target.value === '' ? '' : Number(e.target.value))} className="w-full p-3 text-xl font-bold text-yellow-900 border-2 border-yellow-300 rounded-lg focus:ring-2 focus:ring-yellow-500 focus:outline-none" placeholder="請輸入總額" />
+          </div>
+
+          <div className="bg-white p-5 rounded-xl border border-gray-200 shadow-sm">
+            <label className="block text-sm font-bold text-gray-800 mb-3">🔍 選擇您現階段的財務重心：</label>
+            <div className="space-y-3">
+              <label className={`block p-3 border-2 rounded-lg cursor-pointer transition-all ${status === 'has_debt' ? 'border-red-400 bg-red-50' : 'border-gray-100 hover:border-gray-300'}`}>
+                <div className="flex items-center gap-2">
+                  <input type="radio" name="status" checked={status === 'has_debt'} onChange={() => setStatus('has_debt')} className="text-red-500 focus:ring-red-500"/>
+                  <span className="font-bold text-gray-800">優先清償債務</span>
+                </div>
+                <p className="text-xs text-gray-500 ml-6 mt-1">仍有高循環利息的負債（如卡債、信貸等）</p>
+              </label>
+              <label className={`block p-3 border-2 rounded-lg cursor-pointer transition-all ${status === 'no_ef' ? 'border-blue-400 bg-blue-50' : 'border-gray-100 hover:border-gray-300'}`}>
+                <div className="flex items-center gap-2">
+                  <input type="radio" name="status" checked={status === 'no_ef'} onChange={() => setStatus('no_ef')} className="text-blue-500 focus:ring-blue-500"/>
+                  <span className="font-bold text-gray-800">建構財務安全網</span>
+                </div>
+                <p className="text-xs text-gray-500 ml-6 mt-1">尚未存滿 6 個月以上的緊急預備金</p>
+              </label>
+              <label className={`block p-3 border-2 rounded-lg cursor-pointer transition-all ${status === 'has_ef' ? 'border-green-400 bg-green-50' : 'border-gray-100 hover:border-gray-300'}`}>
+                <div className="flex items-center gap-2">
+                  <input type="radio" name="status" checked={status === 'has_ef'} onChange={() => setStatus('has_ef')} className="text-green-500 focus:ring-green-500"/>
+                  <span className="font-bold text-gray-800">擴大資產與投資</span>
+                </div>
+                <p className="text-xs text-gray-500 ml-6 mt-1">已有充足備用金，可著眼長期資產增值</p>
+              </label>
+            </div>
+          </div>
+        </div>
+
+        <div className="md:col-span-7">
+          <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden h-full flex flex-col">
+            <div className="bg-gray-100 px-4 py-3 font-bold text-gray-800 text-center border-b border-gray-200 flex justify-between items-center">
+              <span>建議分配順序</span>
+              <span className={`text-sm px-2 py-1 rounded-full ${status === 'has_debt' ? 'bg-red-100 text-red-700' : status === 'no_ef' ? 'bg-blue-100 text-blue-700' : 'bg-green-100 text-green-700'}`}>
+                {status === 'has_debt' ? '理債優先期' : status === 'no_ef' ? '防護網建構期' : '資產增值期'}
+              </span>
+            </div>
+            <div className="flex bg-gray-50 border-b border-gray-200 text-sm font-semibold text-gray-500">
+              <div className="w-16 p-3 text-center border-r border-gray-200">順序</div>
+              <div className="flex-1 p-3 border-r border-gray-200">規劃項目 / 說明</div>
+              <div className="w-32 p-3 text-center">配置金額</div>
+            </div>
+            <div className="flex-1">
+              {allocations.map((item, index) => (
+                <div key={item.id} className="flex border-b border-gray-100 last:border-0 hover:bg-yellow-50/30 transition-colors">
+                  <div className="w-16 p-3 flex items-center justify-center border-r border-gray-100 font-bold text-gray-400 text-lg">{index + 1}</div>
+                  <div className="flex-1 p-3 border-r border-gray-100 flex flex-col justify-center">
+                    <span className="font-bold text-gray-800">{item.name}</span>
+                    <span className="text-xs text-gray-500">{item.desc}</span>
+                  </div>
+                  <div className="w-32 p-2 flex items-center justify-center">
+                    <input type="number" value={item.amount} onChange={e => handleUpdateAlloc(item.id, e.target.value)} placeholder="設定金額" className="w-full p-2 text-center border-b-2 border-gray-200 focus:border-yellow-500 focus:outline-none bg-transparent font-bold text-gray-700" />
+                  </div>
+                </div>
+              ))}
+            </div>
+            <div className="bg-gray-50 p-4 border-t border-gray-200">
+              <div className="flex justify-between items-center mb-2">
+                <span className="text-gray-600 font-bold">已分配總額</span>
+                <span className="font-bold text-gray-800">${totalAllocated.toLocaleString()}</span>
+              </div>
+              <div className="flex justify-between items-center text-lg">
+                <span className="font-bold text-gray-800">剩餘未分配額度</span>
+                <span className={`font-black ${remaining === 0 ? 'text-green-600' : remaining < 0 ? 'text-red-500' : 'text-yellow-600'}`}>${remaining.toLocaleString()}</span>
+              </div>
+              {remaining < 0 && <p className="text-xs text-red-500 text-right mt-1">⚠️ 警告：配置總額已超過獎金總數！</p>}
+              {remaining === 0 && Number(bonusAmount) > 0 && <p className="text-xs text-green-600 text-right mt-1 flex items-center justify-end gap-1"><CheckCircle2 size={14}/> 資金配置完成！</p>}
+              
+              <button onClick={() => onImport(Number(bonusAmount || 0), allocations)} className="w-full mt-4 py-3 bg-yellow-500 hover:bg-yellow-600 text-white font-bold rounded-xl shadow-sm flex justify-center items-center gap-2 transition-colors">
+                匯入本月預算表 <ArrowRight size={18} />
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <button onClick={saveRecord} className="w-full py-4 bg-yellow-600 hover:bg-yellow-700 text-white font-bold text-lg rounded-xl shadow-md flex justify-center items-center gap-2 transition-colors mt-8">
+        <Save size={24} /> 儲存「{recordName}」規劃紀錄
+      </button>
+
+      {savedRecords.length > 0 && (
+        <div className="bg-white p-5 rounded-xl shadow-sm border border-yellow-200 mt-8">
+          <h2 className="text-lg font-bold text-gray-800 mb-4 flex items-center gap-2 border-b pb-2"><History size={20} className="text-yellow-600"/>歷史獎金規劃紀錄</h2>
+          <div className="space-y-3">
+            {savedRecords.map(record => (
+              <div key={record.id} className="p-4 border rounded-lg bg-gray-50 flex flex-col md:flex-row justify-between items-start md:items-center gap-4 group hover:border-yellow-300 transition-colors">
+                <div>
+                  <span className="font-bold text-yellow-800 text-lg">{record.recordName}</span>
+                  <div className="text-sm text-gray-500 mt-1">建檔時間: {new Date(record.timestamp).toLocaleDateString()}</div>
+                  <div className="text-sm font-bold text-yellow-600 mt-1">總額: ${(record.bonusAmount || 0).toLocaleString()}</div>
+                </div>
+                <div className="flex items-center gap-3 w-full md:w-auto">
+                  <button onClick={() => loadRecord(record)} className="flex-1 md:flex-none px-4 py-2 bg-white border border-yellow-300 text-yellow-700 text-sm font-bold rounded-lg hover:bg-yellow-100 transition-colors flex items-center justify-center gap-1"><Download size={16}/> 載入</button>
+                  <button onClick={() => deleteRecord(record.id)} className="p-2 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors"><Trash2 size={20} /></button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+// === 預算健檢成效元件 ===
+const HealthCheckView = ({ db, user, appId, savedMonthlyRecords }) => {
+  const [isLoaded, setIsLoaded] = useState(false);
+  
+  const [period, setPeriod] = useState(() => {
+    const today = new Date();
+    const quarter = Math.floor((today.getMonth() + 3) / 3);
+    return `${today.getFullYear()}-Q${quarter} 財務健檢`;
+  });
+
+  const [assets, setAssets] = useState([
+    { id: 1, name: '各家銀行存款', pre: '', post: '' },
+    { id: 2, name: '投資(股票/ETF)', pre: '', post: '' },
+    { id: 3, name: '電支帳戶/儲值卡', pre: '', post: '' },
+    { id: 4, name: '押金/應收款', pre: '', post: '' },
+  ]);
+  const [liabilities, setLiabilities] = useState([
+    { id: 1, name: '信用卡未繳款', pre: '', post: '' },
+    { id: 2, name: '各項貸款', pre: '', post: '' },
+    { id: 3, name: '應付/代墊款', pre: '', post: '' },
+  ]);
+
+  const [premiumGoals, setPremiumGoals] = useState([{ id: 1, amount: '', date: '', done: false }]);
+  const [fixedExpenses, setFixedExpenses] = useState([{ id: 1, name: '', amount: '' }]);
+  const [budgets, setBudgets] = useState([{ id: 1, name: '', amount: '' }]);
+  const [monthlyStats, setMonthlyStats] = useState([{ id: 1, name: '', amount: '' }]);
+  
+  const [savedHealthRecords, setSavedHealthRecords] = useState([]);
+
+  const [importStartMonth, setImportStartMonth] = useState('');
+  const [importEndMonth, setImportEndMonth] = useState('');
+
+  useEffect(() => {
+    if (!user || !db) { setIsLoaded(true); return; }
+    const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'health');
+    getDoc(docRef).then(snap => {
+      if (snap.exists()) {
+        const data = snap.data();
+        if (data.period) setPeriod(data.period);
+        if (data.assets) setAssets(JSON.parse(data.assets));
+        if (data.liabilities) setLiabilities(JSON.parse(data.liabilities));
+        if (data.premiumGoals) setPremiumGoals(JSON.parse(data.premiumGoals));
+        if (data.fixedExpenses) setFixedExpenses(JSON.parse(data.fixedExpenses));
+        if (data.budgets) setBudgets(JSON.parse(data.budgets));
+        if (data.monthlyStats) setMonthlyStats(JSON.parse(data.monthlyStats));
+      }
+      setIsLoaded(true);
+    }).catch(() => setIsLoaded(true));
+
+    const recordsRef = collection(db, 'artifacts', appId, 'users', user.uid, 'healthRecords');
+    const unsubscribe = onSnapshot(recordsRef, (snap) => {
+      const records = [];
+      snap.forEach(d => records.push({ id: d.id, ...d.data() }));
+      records.sort((a, b) => b.timestamp - a.timestamp); 
+      setSavedHealthRecords(records);
+    }, (err) => console.error("Health records snapshot error:", err));
+
+    return () => unsubscribe();
+  }, [user, db, appId]);
+
+  useEffect(() => {
+    if (!isLoaded || !user || !db) return;
+    const timer = setTimeout(() => {
+      const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'health');
+      setDoc(docRef, { period, assets: JSON.stringify(assets), liabilities: JSON.stringify(liabilities), premiumGoals: JSON.stringify(premiumGoals), fixedExpenses: JSON.stringify(fixedExpenses), budgets: JSON.stringify(budgets), monthlyStats: JSON.stringify(monthlyStats) });
+    }, 1500);
+    return () => clearTimeout(timer);
+  }, [period, assets, liabilities, premiumGoals, fixedExpenses, budgets, monthlyStats, isLoaded, user, db, appId]);
+
+  const handleUpdateArr = (setter, id, field, value) => setter(prev => prev.map(item => item.id === id ? { ...item, [field]: value } : item));
+  const handleAddArr = (setter, defaultObj) => setter(prev => [...prev, { id: Date.now(), ...defaultObj }]);
+  const handleDelArr = (setter, id) => setter(prev => prev.filter(item => item.id !== id));
+
+  const handleAutoImport = () => {
+    if (!importStartMonth || !importEndMonth) return alert('請先選擇起始與結束月份！');
+    const filteredRecords = savedMonthlyRecords.filter(r => r.month >= importStartMonth && r.month <= importEndMonth);
+    if (filteredRecords.length === 0) return alert(`在 ${importStartMonth} 到 ${importEndMonth} 區間內，找不到任何儲存過的「結算紀錄」！\n請確認您在「預算分配」分頁中是否有儲存過這幾個月的資料。`);
+
+    let sumIncome = 0, sumFixed = 0, sumDebt = 0, sumSavings = 0, sumLiving = 0;
+    const newMonthlyStats = [];
+    const sortedFiltered = [...filteredRecords].sort((a, b) => a.month.localeCompare(b.month));
+
+    sortedFiltered.forEach((r, idx) => {
+      sumIncome += Number(r.totalIncome || 0); sumFixed += Number(r.totalFixed || 0); sumDebt += Number(r.totalDebt || 0); sumSavings += Number(r.savingsAmount || 0); sumLiving += Number(r.totalLiving || 0);
+      newMonthlyStats.push({ id: Date.now() + idx, name: r.month, amount: r.totalBalanceInv || 0 });
+    });
+
+    if (window.confirm(`找到 ${filteredRecords.length} 筆結算紀錄。\n即將自動覆蓋右下方「實際預算分配金額」與「每月實際結餘統計」兩個表格，確定要匯入嗎？`)) {
+      setBudgets([{ id: Date.now() + 1, name: '區間總收入', amount: sumIncome }, { id: Date.now() + 2, name: '區間總儲蓄', amount: sumSavings }, { id: Date.now() + 3, name: '總債務攤還', amount: sumDebt }, { id: Date.now() + 4, name: '總固定支出', amount: sumFixed }, { id: Date.now() + 5, name: '總生活花費', amount: sumLiving }]);
+      setMonthlyStats(newMonthlyStats.length > 0 ? newMonthlyStats : [{ id: 1, name: '', amount: '' }]);
+      alert('✅ 自動加總與匯入完成！');
+    }
+  };
+
+  const saveHealthRecord = async () => {
+    if (!period.trim()) return alert("請輸入評估期數名稱");
+    if (savedHealthRecords.some(r => r.period === period)) {
+      if (!window.confirm(`${period} 的紀錄已存在，確定要覆蓋嗎？`)) return;
+    }
+    const recordData = { period, assets: JSON.stringify(assets), liabilities: JSON.stringify(liabilities), premiumGoals: JSON.stringify(premiumGoals), fixedExpenses: JSON.stringify(fixedExpenses), budgets: JSON.stringify(budgets), monthlyStats: JSON.stringify(monthlyStats), timestamp: Date.now() };
+    if (user && db) {
+      const existing = savedHealthRecords.find(r => r.period === period);
+      const colRef = collection(db, 'artifacts', appId, 'users', user.uid, 'healthRecords');
+      try {
+        if (existing && existing.id) await setDoc(doc(colRef, existing.id), recordData);
+        else await setDoc(doc(colRef, `${period}-${Date.now()}`), recordData);
+      } catch (e) { console.error("Save health record error:", e); }
+    } else {
+       setSavedHealthRecords(prev => [...prev.filter(r => r.period !== period), { id: Date.now(), ...recordData }].sort((a, b) => b.timestamp - a.timestamp));
+    }
+  };
+
+  const loadRecord = (record) => {
+    if(!window.confirm(`確定要載入「${record.period}」的紀錄嗎？\n這將覆蓋目前畫面上未儲存的資料。`)) return;
+    setPeriod(record.period);
+    if (record.assets) setAssets(JSON.parse(record.assets));
+    if (record.liabilities) setLiabilities(JSON.parse(record.liabilities));
+    setPremiumGoals(JSON.parse(record.premiumGoals)); setFixedExpenses(JSON.parse(record.fixedExpenses)); setBudgets(JSON.parse(record.budgets)); setMonthlyStats(JSON.parse(record.monthlyStats));
+  };
+
+  const deleteHealthRecord = async (id) => {
+    if (user && db) {
+      try { await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'healthRecords', id.toString())); } catch(e) { console.error(e); }
+    } else { setSavedHealthRecords(prev => prev.filter(r => r.id !== id)); }
+  };
+
+  const totalPreAssets = useMemo(() => assets.reduce((sum, item) => sum + (Number(item.pre) || 0), 0), [assets]);
+  const totalPostAssets = useMemo(() => assets.reduce((sum, item) => sum + (Number(item.post) || 0), 0), [assets]);
+  const totalPreLiabilities = useMemo(() => liabilities.reduce((sum, item) => sum + (Number(item.pre) || 0), 0), [liabilities]);
+  const totalPostLiabilities = useMemo(() => liabilities.reduce((sum, item) => sum + (Number(item.post) || 0), 0), [liabilities]);
+  
+  const preNetWorth = totalPreAssets - totalPreLiabilities;
+  const postNetWorth = totalPostAssets - totalPostLiabilities;
+  const netWorthGrowth = postNetWorth - preNetWorth;
+
+  const totalFixed = useMemo(() => fixedExpenses.reduce((sum, item) => sum + (Number(item.amount) || 0), 0), [fixedExpenses]);
+  const totalBudgets = useMemo(() => budgets.reduce((sum, item) => sum + (Number(item.amount) || 0), 0), [budgets]);
+  const totalMonthly = useMemo(() => monthlyStats.reduce((sum, item) => sum + (Number(item.amount) || 0), 0), [monthlyStats]);
+
+  const BalanceSheetTable = ({ title, items, setter, totalPre, totalPost, defaultNewObj, colorClass }) => {
+    const totalDiff = totalPost - totalPre;
+    
+    return (
+      <div className={`border rounded-lg overflow-hidden flex flex-col bg-white shadow-sm hover:shadow-md transition-shadow ${colorClass}`}>
+        <div className={`px-4 py-2 font-bold text-center border-b text-sm md:text-base ${colorClass.replace('border-', 'bg-').replace('-200', '-100').replace('-300', '-100')} text-gray-800`}>{title}</div>
+        <div className="flex bg-gray-50 border-b border-gray-200 text-xs font-semibold text-gray-500">
+           <div className="w-[34%] p-2 text-center border-r border-gray-200">項目 (如: 股票代號)</div>
+           <div className="w-[22%] p-2 text-center border-r border-gray-200">期初金額</div>
+           <div className="w-[22%] p-2 text-center border-r border-gray-200">期末現值</div>
+           <div className="w-[22%] p-2 text-center">增減 / 損益</div>
+        </div>
+        <div className="flex-1 p-1 space-y-1">
+           {items.map((item) => {
+             const preVal = Number(item.pre) || 0;
+             const postVal = Number(item.post) || 0;
+             const diff = postVal - preVal;
+             
+             return (
+               <div key={item.id} className="flex items-center gap-1 group relative">
+                 <input type="text" value={item.name} onChange={e => handleUpdateArr(setter, item.id, 'name', e.target.value)} className="w-[34%] p-1.5 text-xs md:text-sm border rounded focus:ring-1 bg-transparent" placeholder="項目"/>
+                 <input type="number" value={item.pre} onChange={e => handleUpdateArr(setter, item.id, 'pre', e.target.value)} className="w-[22%] p-1.5 text-xs md:text-sm border rounded focus:ring-1 bg-transparent text-center" placeholder="期初"/>
+                 <input type="number" value={item.post} onChange={e => handleUpdateArr(setter, item.id, 'post', e.target.value)} className="w-[22%] p-1.5 text-xs md:text-sm border rounded focus:ring-1 bg-transparent text-center" placeholder="期末"/>
+                 <div className={`w-[22%] p-1.5 text-xs md:text-sm text-center font-bold ${diff > 0 ? 'text-green-600' : diff < 0 ? 'text-red-500' : 'text-gray-400'}`}>
+                   {diff > 0 ? '+' : ''}{diff === 0 && (item.pre === '' && item.post === '') ? '-' : diff.toLocaleString()}
+                 </div>
+                 <button onClick={() => handleDelArr(setter, item.id)} className="absolute -left-5 md:-left-6 opacity-0 group-hover:opacity-100 text-red-400 hover:text-red-600 transition-opacity"><Trash2 size={14}/></button>
+               </div>
+             );
+           })}
+           <button onClick={() => handleAddArr(setter, defaultNewObj)} className="w-full py-1.5 text-xs text-gray-400 hover:text-gray-600 bg-gray-50 rounded transition-colors flex items-center justify-center gap-1 mt-1"><Plus size={14} /> 新增項目</button>
+        </div>
+        <div className="flex bg-gray-100 font-bold text-sm border-t border-gray-200">
+           <div className="w-[34%] p-2 text-center text-gray-600 border-r border-gray-200">合計</div>
+           <div className="w-[22%] p-2 text-center text-gray-800 border-r border-gray-200">${totalPre.toLocaleString()}</div>
+           <div className="w-[22%] p-2 text-center text-gray-800 border-r border-gray-200">${totalPost.toLocaleString()}</div>
+           <div className={`w-[22%] p-2 text-center ${totalDiff > 0 ? 'text-green-600' : totalDiff < 0 ? 'text-red-600' : 'text-gray-600'}`}>
+             {totalDiff > 0 ? '+' : ''}{totalDiff.toLocaleString()}
+           </div>
+        </div>
+      </div>
+    );
+  };
+
+  return (
+    <div className="bg-white rounded-2xl shadow-sm border border-purple-100 p-4 md:p-8 space-y-6 md:space-y-8">
+      <div className="text-center mb-6">
+         <h2 className="text-2xl md:text-3xl font-bold text-purple-900 tracking-wider">財務健康指標追蹤</h2>
+         <p className="text-purple-600 text-sm mt-2">階段性回顧：檢視資產負債變化與財務目標達成率</p>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div className="bg-purple-50 p-4 rounded-xl border border-purple-200 shadow-sm flex flex-col justify-between">
+          <label className="block text-sm font-bold text-purple-900 mb-2 flex items-center gap-1"><Calendar size={18} /> 1. 設定評估期數名稱</label>
+          <input type="text" value={period} onChange={(e) => setPeriod(e.target.value)} placeholder="例如：2026年第一季、2026下半年" className="w-full p-2.5 border border-purple-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-400 font-semibold text-gray-800" />
+          <p className="text-xs text-gray-500 mt-2">＊期初：該區間開始前您的資產狀況。<br/>＊期末：該區間結束後您的最新狀況。</p>
+        </div>
+
+        <div className="bg-blue-50 p-4 rounded-xl border border-blue-200 shadow-sm flex flex-col justify-between">
+          <label className="block text-sm font-bold text-blue-900 mb-2 flex items-center gap-1"><Calculator size={18} /> 2. 自動結算區間資料 (選用)</label>
+          <div className="flex items-center gap-2 mb-2">
+            <input type="month" value={importStartMonth} onChange={e => setImportStartMonth(e.target.value)} className="w-full p-2 text-sm border rounded focus:ring-2 focus:ring-blue-300" />
+            <span className="text-gray-500 font-bold">至</span>
+            <input type="month" value={importEndMonth} onChange={e => setImportEndMonth(e.target.value)} className="w-full p-2 text-sm border rounded focus:ring-2 focus:ring-blue-300" />
+          </div>
+          <button onClick={handleAutoImport} className="w-full py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-bold rounded-lg transition-colors flex items-center justify-center gap-1 shadow-sm"><Download size={16} /> 自動彙整歷史紀錄</button>
+        </div>
+      </div>
+      
+      <div className="bg-slate-50 p-4 md:p-6 rounded-xl border border-slate-200 shadow-inner space-y-6">
+        <h3 className="font-bold text-lg text-slate-800 flex items-center gap-2 border-b border-slate-300 pb-2"><PiggyBank className="text-slate-600" /> 3. 個人資產負債盤點 (可追蹤投資績效)</h3>
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 md:gap-6">
+          <BalanceSheetTable title="💰 總資產清單 (帳戶餘額、各檔股票投資)" items={assets} setter={setAssets} totalPre={totalPreAssets} totalPost={totalPostAssets} defaultNewObj={{ name: '', pre: '', post: '' }} colorClass="border-green-300" />
+          <BalanceSheetTable title="💳 總負債清單 (貸款、卡費、應付款)" items={liabilities} setter={setLiabilities} totalPre={totalPreLiabilities} totalPost={totalPostLiabilities} defaultNewObj={{ name: '', pre: '', post: '' }} colorClass="border-red-300" />
+        </div>
+        <div className="bg-white rounded-xl shadow border border-purple-200 p-4 flex flex-col md:flex-row items-center justify-between gap-4">
+          <div className="text-center w-full md:w-1/3"><div className="text-sm font-bold text-gray-500 mb-1">期初 淨資產總計</div><div className="text-xl font-bold text-gray-800">${preNetWorth.toLocaleString()}</div></div>
+          <div className="hidden md:block text-2xl text-gray-300">➡️</div>
+          <div className="text-center w-full md:w-1/3"><div className="text-sm font-bold text-purple-600 mb-1">期末 淨資產總計</div><div className="text-2xl font-black text-purple-900">${postNetWorth.toLocaleString()}</div></div>
+          <div className="w-full md:w-1/3 border-t md:border-t-0 md:border-l border-gray-200 pt-4 md:pt-0 md:pl-4 text-center"><div className="text-xs font-bold text-gray-500 mb-1">本期淨資產成長</div><div className={`text-lg font-bold flex items-center justify-center gap-1 ${netWorthGrowth >= 0 ? 'text-green-600' : 'text-red-500'}`}>{netWorthGrowth >= 0 ? <TrendingUp size={18}/> : <TrendingUp size={18} className="rotate-180"/>}${Math.abs(netWorthGrowth).toLocaleString()}</div></div>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 md:gap-8">
+         <ArrayTable title="年度大筆支出/預存目標" columns={[{ width: 'w-2/5', label: '目標金額', field: 'amount', render: (item, onChange) => <input type="number" className="w-full text-center text-sm p-1.5 border-0 focus:ring-1 bg-transparent" value={item.amount} onChange={e=>onChange(e.target.value)} placeholder="金額"/> }, { width: 'w-2/5', label: '預計達成時', field: 'date', render: (item, onChange) => <input type="text" className="w-full text-center text-sm p-1.5 border-0 focus:ring-1 bg-transparent" value={item.date} onChange={e=>onChange(e.target.value)} placeholder="如: 10月"/> }, { width: 'w-1/5', label: '完成', field: 'done', render: (item, onChange) => <button onClick={()=>onChange(!item.done)} className="text-purple-600 hover:text-purple-800 transition-colors">{item.done ? <CheckSquare size={18}/> : <Square size={18} className="text-gray-300"/>}</button> }]} items={premiumGoals} setter={setPremiumGoals} defaultNewObj={{ amount: '', date: '', done: false }} handleUpdateArr={handleUpdateArr} handleDelArr={handleDelArr} handleAddArr={handleAddArr} />
+         <ArrayTable title="固定支出檢視" columns={[{ width: 'w-1/2', label: '支出項目', field: 'name', render: (item, onChange) => <input type="text" className="w-full text-center text-sm p-1.5 border-0 focus:ring-1 bg-transparent" value={item.name} onChange={e=>onChange(e.target.value)} placeholder="項目名稱"/> }, { width: 'w-1/2', label: '金額', field: 'amount', render: (item, onChange) => <input type="number" className="w-full text-center text-sm p-1.5 border-0 focus:ring-1 bg-transparent" value={item.amount} onChange={e=>onChange(e.target.value)} placeholder="金額"/> }]} items={fixedExpenses} setter={setFixedExpenses} totalLabel="合計" totalValue={totalFixed} defaultNewObj={{ name: '', amount: '' }} handleUpdateArr={handleUpdateArr} handleDelArr={handleDelArr} handleAddArr={handleAddArr} />
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 md:gap-8">
+         <ArrayTable title="實際預算分配金額 (可自動匯入)" columns={[{ width: 'w-1/2', label: '預算項目', field: 'name', render: (item, onChange) => <input type="text" className="w-full text-center text-sm p-1.5 border-0 focus:ring-1 bg-transparent" value={item.name} onChange={e=>onChange(e.target.value)} placeholder="項目名稱"/> }, { width: 'w-1/2', label: '金額', field: 'amount', render: (item, onChange) => <input type="number" className="w-full text-center text-sm p-1.5 border-0 focus:ring-1 bg-transparent" value={item.amount} onChange={e=>onChange(e.target.value)} placeholder="金額"/> }]} items={budgets} setter={setBudgets} totalLabel="合計" totalValue={totalBudgets} defaultNewObj={{ name: '', amount: '' }} handleUpdateArr={handleUpdateArr} handleDelArr={handleDelArr} handleAddArr={handleAddArr} />
+         <ArrayTable title="每月實際結餘統計 (可自動匯入)" columns={[{ width: 'w-1/2', label: '月份', field: 'name', render: (item, onChange) => <input type="text" className="w-full text-center text-sm p-1.5 border-0 focus:ring-1 bg-transparent" value={item.name} onChange={e=>onChange(e.target.value)} placeholder="如: 10月"/> }, { width: 'w-1/2', label: '結餘金額', field: 'amount', render: (item, onChange) => <input type="number" className="w-full text-center text-sm p-1.5 border-0 focus:ring-1 bg-transparent" value={item.amount} onChange={e=>onChange(e.target.value)} placeholder="金額"/> }]} items={monthlyStats} setter={setMonthlyStats} totalLabel="合計" totalValue={totalMonthly} defaultNewObj={{ name: '', amount: '' }} handleUpdateArr={handleUpdateArr} handleDelArr={handleDelArr} handleAddArr={handleAddArr} />
+      </div>
+
+      <button onClick={saveHealthRecord} className="w-full py-4 bg-purple-600 hover:bg-purple-700 text-white font-bold text-lg rounded-xl shadow-md flex justify-center items-center gap-2 transition-colors mt-8">
+        <Save size={24} /> 儲存「{period}」健檢紀錄
+      </button>
+
+      {savedHealthRecords.length > 0 && (
+        <div className="bg-white p-5 rounded-xl shadow-sm border border-purple-200 mt-8">
+          <h2 className="text-lg font-bold text-gray-800 mb-4 flex items-center gap-2 border-b pb-2"><History size={20} className="text-purple-600"/>歷史健檢紀錄</h2>
+          <div className="space-y-3">
+            {savedHealthRecords.map(record => (
+              <div key={record.id} className="p-4 border rounded-lg bg-gray-50 flex flex-col md:flex-row justify-between items-start md:items-center gap-4 group hover:border-purple-300 transition-colors">
+                <div>
+                  <span className="font-bold text-purple-800 text-lg">{record.period}</span>
+                  <div className="text-sm text-gray-500 mt-1">建檔時間: {new Date(record.timestamp).toLocaleDateString()} {new Date(record.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</div>
+                </div>
+                <div className="flex items-center gap-3 w-full md:w-auto">
+                  <button onClick={() => loadRecord(record)} className="flex-1 md:flex-none px-4 py-2 bg-white border border-purple-300 text-purple-700 text-sm font-bold rounded-lg hover:bg-purple-100 transition-colors flex items-center justify-center gap-1"><Download size={16}/> 載入</button>
+                  <button onClick={() => deleteHealthRecord(record.id)} className="p-2 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors" title="刪除紀錄"><Trash2 size={20} /></button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+// === 主程式 ===
+export default function App() {
+  const [currentView, setCurrentView] = useState('accounts'); // 預設進入帳戶管理
+  const [user, setUser] = useState(null);
+  const [isLoaded, setIsLoaded] = useState(false);
+  
+  useEffect(() => {
+    if (!auth) { setIsLoaded(true); return; }
+    const initAuth = async () => {
+      try {
+        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) await signInWithCustomToken(auth, __initial_auth_token);
+        else await signInAnonymously(auth);
+      } catch (err) { console.error("Auth error:", err); }
+    };
+    initAuth();
+    const unsubscribe = onAuthStateChanged(auth, setUser);
+    return () => unsubscribe();
+  }, []);
+
+  const [month, setMonth] = useState(() => { const today = new Date(); return `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}`; });
+  
+  // 核心狀態：系統總帳戶清單
+  const [accounts, setAccounts] = useState([
+    { id: 1, name: '主開銷銀行', balance: 0 },
+    { id: 2, name: '數位支付(LinePay)', balance: 0 },
+    { id: 3, name: '信用卡(填負數)', balance: 0 },
+  ]);
+
+  const [incomes, setIncomes] = useState([{ id: 1, name: '', amount: '', account: '' }]);
+  const [masterDebts, setMasterDebts] = useState([{ id: 1, name: '', amount: '', note: '', dueDate: '', account: '' }]);
+  const [savingsRate, setSavingsRate] = useState(30);
+  const [debts, setDebts] = useState([{ id: 1, name: '', amount: '', account: '' }]);
+  const [fixedExpenses, setFixedExpenses] = useState([{ id: 1, name: '', amount: '', account: '' }]);
+  const [investments, setInvestments] = useState([{ id: 1, name: '', amount: '', account: '' }]);
+  const [livingExpenses, setLivingExpenses] = useState([{ id: 1, name: '', amount: '', account: '' }]);
+  const [balanceInventory, setBalanceInventory] = useState([{ id: 1, name: '', amount: '', account: '' }]);
+  const [balanceAllocation, setBalanceAllocation] = useState([{ id: 1, name: '', amount: '', account: '' }]);
+  const [savedRecords, setSavedRecords] = useState([]);
+
+  useEffect(() => {
+    if (!user || !db) { setIsLoaded(true); return; }
+    
+    const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'budget');
+    getDoc(docRef).then(snap => {
+      if (snap.exists()) {
+        const data = snap.data();
+        if(data.accounts) setAccounts(JSON.parse(data.accounts));
+        if(data.incomes) setIncomes(JSON.parse(data.incomes));
+        if(data.masterDebts) setMasterDebts(JSON.parse(data.masterDebts));
+        if(data.debts) setDebts(JSON.parse(data.debts));
+        if(data.fixedExpenses) setFixedExpenses(JSON.parse(data.fixedExpenses));
+        if(data.investments) setInvestments(JSON.parse(data.investments)); // 讀取投資資料
+        if(data.livingExpenses) setLivingExpenses(JSON.parse(data.livingExpenses));
+        if(data.savingsRate) setSavingsRate(data.savingsRate);
+        if(data.balanceInventory) setBalanceInventory(JSON.parse(data.balanceInventory));
+        if(data.balanceAllocation) setBalanceAllocation(JSON.parse(data.balanceAllocation));
+      }
+      setIsLoaded(true);
+    }).catch(() => setIsLoaded(true));
+
+    const recordsRef = collection(db, 'artifacts', appId, 'users', user.uid, 'monthlyRecords');
+    const unsubscribe = onSnapshot(recordsRef, (snap) => {
+      const records = [];
+      snap.forEach(d => records.push({ id: d.id, ...d.data() }));
+      records.sort((a, b) => b.month.localeCompare(a.month));
+      setSavedRecords(records);
+    }, (err) => console.error("Records snapshot error:", err));
+    return () => unsubscribe();
+  }, [user, db]);
+
+  useEffect(() => {
+    if (!isLoaded || !user || !db) return;
+    const timer = setTimeout(() => {
+      const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'budget');
+      setDoc(docRef, { accounts: JSON.stringify(accounts), incomes: JSON.stringify(incomes), masterDebts: JSON.stringify(masterDebts), debts: JSON.stringify(debts), fixedExpenses: JSON.stringify(fixedExpenses), investments: JSON.stringify(investments), livingExpenses: JSON.stringify(livingExpenses), savingsRate, balanceInventory: JSON.stringify(balanceInventory), balanceAllocation: JSON.stringify(balanceAllocation) });
+    }, 1500);
+    return () => clearTimeout(timer);
+  }, [accounts, incomes, masterDebts, debts, fixedExpenses, investments, livingExpenses, savingsRate, balanceInventory, balanceAllocation, isLoaded, user, db]);
+
+  const totalMasterDebt = useMemo(() => masterDebts.reduce((sum, item) => sum + (Number(item.amount) || 0), 0), [masterDebts]);
+  const totalIncome = useMemo(() => incomes.reduce((sum, item) => sum + (Number(item.amount) || 0), 0), [incomes]);
+  const totalDebt = useMemo(() => debts.reduce((sum, item) => sum + (Number(item.amount) || 0), 0), [debts]);
+  const totalFixed = useMemo(() => fixedExpenses.reduce((sum, item) => sum + (Number(item.amount) || 0), 0), [fixedExpenses]);
+  const totalInvestment = useMemo(() => investments.reduce((sum, item) => sum + (Number(item.amount) || 0), 0), [investments]);
+  const totalLiving = useMemo(() => livingExpenses.reduce((sum, item) => sum + (Number(item.amount) || 0), 0), [livingExpenses]);
+  const totalBalanceInv = useMemo(() => balanceInventory.reduce((sum, item) => sum + (Number(item.amount) || 0), 0), [balanceInventory]);
+  const totalBalanceAlloc = useMemo(() => balanceAllocation.reduce((sum, item) => sum + (Number(item.amount) || 0), 0), [balanceAllocation]);
+
+  // 核心邏輯更新：扣除投資金額
+  const availableBudget = totalIncome - totalDebt - totalFixed - totalInvestment;
+  const savingsAmount = Math.round(availableBudget * (savingsRate / 100));
+  const livingBudget = availableBudget - savingsAmount;
+  const remainingLiving = livingBudget - totalLiving;
+  const remainingBalanceAlloc = totalBalanceInv - totalBalanceAlloc;
+
+  // 各帳戶資金流向與即時預估餘額結算
+  const accountFlows = useMemo(() => {
+    const flows = {};
+    accounts.forEach(acc => {
+      flows[acc.name] = { in: 0, out: 0, initial: Number(acc.balance) || 0 };
+    });
+
+    const addFlow = (item, type) => {
+      const acc = item.account?.trim();
+      if (!acc || !flows[acc]) return; 
+      if (type === 'in') flows[acc].in += (Number(item.amount) || 0);
+      if (type === 'out') flows[acc].out += (Number(item.amount) || 0);
+    };
+
+    incomes.forEach(i => addFlow(i, 'in'));
+    debts.forEach(i => addFlow(i, 'out'));
+    fixedExpenses.forEach(i => addFlow(i, 'out'));
+    investments.forEach(i => addFlow(i, 'out'));
+    livingExpenses.forEach(i => addFlow(i, 'out'));
+    balanceAllocation.forEach(i => addFlow(i, 'out'));
+
+    return Object.entries(flows).map(([name, data]) => ({
+      name,
+      initial: data.initial,
+      in: data.in,
+      out: data.out,
+      net: data.in - data.out,
+      projected: data.initial + data.in - data.out
+    })).sort((a, b) => b.projected - a.projected); 
+  }, [accounts, incomes, debts, fixedExpenses, investments, livingExpenses, balanceAllocation]);
+
+  const handleAddItem = (setter, initialFields = { name: '', amount: 0, account: '' }) => setter(prev => [...prev, { id: Date.now(), ...initialFields }]);
+  const handleUpdateItem = (setter, id, field, value) => setter(prev => prev.map(item => item.id === id ? { ...item, [field]: value } : item));
+  const handleDeleteItem = (setter, id) => setter(prev => prev.filter(item => item.id !== id));
+
+  const handleImportBonus = (bonusAmt, allocs) => {
+    if (!window.confirm(`確定要將額外收入 $${bonusAmt.toLocaleString()} 及分配項目匯入「每月預算表」中嗎？`)) return;
+    setIncomes(prev => [...prev.filter(item => item.name || item.amount), { id: Date.now(), name: '獎金/額外收入', amount: bonusAmt, account: '' }]);
+    const newDebts = []; const newFixed = [];
+    allocs.forEach((alloc, idx) => {
+      if (!alloc.amount || Number(alloc.amount) <= 0) return;
+      const amt = Number(alloc.amount); const id = Date.now() + 10 + idx;
+      if (alloc.name.includes('債務') || alloc.name.includes('負債')) newDebts.push({ id, name: `[獎金] ${alloc.name}`, amount: amt, account: '' });
+      else newFixed.push({ id, name: `[獎金] ${alloc.name}`, amount: amt, account: '' });
+    });
+    if (newDebts.length > 0) setDebts(prev => [...prev.filter(item => item.name || item.amount), ...newDebts]);
+    if (newFixed.length > 0) setFixedExpenses(prev => [...prev.filter(item => item.name || item.amount), ...newFixed]);
+    setCurrentView('budget');
+  };
+
+  const saveCurrentMonth = async () => {
+    if (savedRecords.some(r => r.month === month)) if (!window.confirm(`${month} 的紀錄已存在，確定要覆蓋嗎？`)) return;
+    const newRecord = { month, totalIncome, totalDebt, totalFixed, totalInvestment, availableBudget, savingsRate, savingsAmount, livingBudget, totalLiving, totalBalanceInv, totalBalanceAlloc, timestamp: Date.now(), incomes: JSON.stringify(incomes), masterDebts: JSON.stringify(masterDebts), debts: JSON.stringify(debts), fixedExpenses: JSON.stringify(fixedExpenses), investments: JSON.stringify(investments), livingExpenses: JSON.stringify(livingExpenses), balanceInventory: JSON.stringify(balanceInventory), balanceAllocation: JSON.stringify(balanceAllocation) };
+    if (user && db) {
+      const existing = savedRecords.find(r => r.month === month);
+      const colRef = collection(db, 'artifacts', appId, 'users', user.uid, 'monthlyRecords');
+      try {
+        if (existing && existing.id) await setDoc(doc(colRef, existing.id), newRecord);
+        else await setDoc(doc(colRef, `${month}-${Date.now()}`), newRecord);
+      } catch (e) { console.error("Save record error:", e); }
+    } else {
+      setSavedRecords(prev => [...prev.filter(r => r.month !== month), { id: Date.now(), ...newRecord }].sort((a, b) => b.month.localeCompare(a.month)));
+    }
+  };
+
+  const loadBudgetRecord = (record) => {
+    if(!window.confirm(`確定要載入 ${record.month} 的紀錄嗎？\n這將覆蓋目前畫面上未儲存的資料。`)) return;
+    setMonth(record.month);
+    if(record.savingsRate) setSavingsRate(record.savingsRate);
+    if(record.incomes) setIncomes(JSON.parse(record.incomes));
+    if(record.masterDebts) setMasterDebts(JSON.parse(record.masterDebts));
+    if(record.debts) setDebts(JSON.parse(record.debts));
+    if(record.fixedExpenses) setFixedExpenses(JSON.parse(record.fixedExpenses));
+    if(record.investments) setInvestments(JSON.parse(record.investments)); // 載入投資資料
+    if(record.livingExpenses) setLivingExpenses(JSON.parse(record.livingExpenses));
+    if(record.balanceInventory) setBalanceInventory(JSON.parse(record.balanceInventory));
+    if(record.balanceAllocation) setBalanceAllocation(JSON.parse(record.balanceAllocation));
+  };
+
+  const deleteRecord = async (id) => {
+    if (user && db) {
+      try { await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'monthlyRecords', id.toString())); } catch(e) { console.error(e); }
+    } else { setSavedRecords(prev => prev.filter(r => r.id !== id)); }
+  };
+
+  return (
+    <div className="min-h-screen bg-slate-50 text-gray-800 font-sans p-4 md:p-8">
+      <div className="max-w-6xl mx-auto space-y-6 relative">
+        
+        {/* Header */}
+        <div className="bg-purple-100 rounded-2xl p-6 shadow-sm border border-purple-200 text-center relative overflow-hidden flex flex-col items-center justify-center">
+          {user && db && (
+             <div className="absolute top-4 right-4 text-green-600 flex items-center gap-1 text-xs font-bold bg-white/80 px-3 py-1.5 rounded-full shadow-sm">
+               <Cloud size={14} className="animate-pulse" /> 雲端同步中
+             </div>
+          )}
+          <div className="absolute top-0 left-0 w-full h-2 bg-gradient-to-r from-purple-300 via-pink-300 to-purple-300"></div>
+          <h1 className="text-2xl md:text-3xl font-bold text-purple-900 mb-2 mt-4 md:mt-2">智能財務管家</h1>
+          <p className="text-purple-700">個人收支與多帳戶資金分配系統</p>
+        </div>
+
+        {/* 分頁切換導覽列 */}
+        <div className="grid grid-cols-3 md:flex md:flex-wrap bg-white rounded-xl shadow-sm border border-gray-200 p-1 mb-6 gap-1 md:gap-0">
+          <button onClick={() => setCurrentView('instructions')} className={`py-3 text-center font-bold rounded-lg transition-colors flex items-center justify-center gap-2 text-xs md:text-sm lg:text-base md:flex-1 ${currentView === 'instructions' ? 'bg-purple-600 text-white shadow' : 'text-gray-500 hover:bg-purple-50'}`}><BookOpen size={18} className="hidden sm:block" />系統說明</button>
+          <button onClick={() => setCurrentView('accounts')} className={`py-3 text-center font-bold rounded-lg transition-colors flex items-center justify-center gap-2 text-xs md:text-sm lg:text-base md:flex-1 ${currentView === 'accounts' ? 'bg-blue-600 text-white shadow' : 'text-gray-500 hover:bg-blue-50'}`}><CreditCard size={18} className="hidden sm:block" />帳戶總表</button>
+          <button onClick={() => setCurrentView('budget')} className={`py-3 text-center font-bold rounded-lg transition-colors flex items-center justify-center gap-2 text-xs md:text-sm lg:text-base md:flex-1 ${currentView === 'budget' ? 'bg-purple-600 text-white shadow' : 'text-gray-500 hover:bg-purple-50'}`}><LayoutDashboard size={18} className="hidden sm:block" />預算分配</button>
+          <button onClick={() => setCurrentView('emergency')} className={`py-3 text-center font-bold rounded-lg transition-colors flex items-center justify-center gap-2 text-xs md:text-sm lg:text-base md:flex-1 ${currentView === 'emergency' ? 'bg-pink-600 text-white shadow' : 'text-gray-500 hover:bg-pink-50'}`}><ShieldAlert size={18} className="hidden sm:block" />預備金試算</button>
+          <button onClick={() => setCurrentView('bonus')} className={`py-3 text-center font-bold rounded-lg transition-colors flex items-center justify-center gap-2 text-xs md:text-sm lg:text-base md:flex-1 ${currentView === 'bonus' ? 'bg-yellow-500 text-white shadow' : 'text-gray-500 hover:bg-yellow-50'}`}><Gift size={18} className="hidden sm:block" />獎金規劃</button>
+          <button onClick={() => setCurrentView('health')} className={`py-3 text-center font-bold rounded-lg transition-colors flex items-center justify-center gap-2 text-xs md:text-sm lg:text-base md:flex-1 ${currentView === 'health' ? 'bg-purple-600 text-white shadow' : 'text-gray-500 hover:bg-purple-50'}`}><Activity size={18} className="hidden sm:block" />財務追蹤</button>
+        </div>
+
+        {currentView === 'instructions' && <InstructionsView />}
+
+        {currentView === 'accounts' && (
+          <div className="space-y-6">
+            <div className="bg-blue-50 rounded-2xl p-6 shadow-sm border border-blue-200 text-center">
+               <h2 className="text-2xl font-bold text-blue-900 mb-2 flex items-center justify-center gap-2"><CreditCard size={24} /> 帳戶與資產總表</h2>
+               <p className="text-blue-700">管理您的銀行帳戶、電子支付與信用卡，隨時掌握即時餘額</p>
+            </div>
+
+            <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4 md:p-6">
+               <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-4 border-b pb-4">
+                 <h3 className="font-bold text-lg text-gray-800 flex items-center gap-2"><Wallet className="text-blue-600"/> 我的帳戶清單</h3>
+                 <div className="text-sm bg-blue-100 text-blue-800 px-4 py-2 rounded-full font-bold shadow-inner">
+                   表定總資產: ${accounts.reduce((sum, a) => sum + (Number(a.balance) || 0), 0).toLocaleString()}
+                 </div>
+               </div>
+               
+               <div className="space-y-3">
+                 {accounts.map(acc => (
+                   <div key={acc.id} className="flex flex-col md:flex-row gap-3 items-center p-3 border border-gray-100 rounded-lg hover:bg-blue-50/50 transition-colors">
+                      <div className="w-full md:w-1/2">
+                        <label className="block text-xs text-gray-500 mb-1 font-bold">帳戶名稱 (提供下拉選單使用)</label>
+                        <input type="text" value={acc.name} onChange={e => handleUpdateItem(setAccounts, acc.id, 'name', e.target.value)} className="w-full p-2.5 border rounded focus:ring-2 focus:ring-blue-300" placeholder="例如: 台新薪轉、LinePay、玉山信用卡" />
+                      </div>
+                      <div className="w-full md:w-2/5">
+                        <label className="block text-xs text-gray-500 mb-1 font-bold">目前真實餘額 (信用卡欠款請填負數)</label>
+                        <input type="number" value={acc.balance === 0 ? 0 : (acc.balance || '')} onChange={e => handleUpdateItem(setAccounts, acc.id, 'balance', e.target.value === '' ? '' : Number(e.target.value))} className="w-full p-2.5 border rounded focus:ring-2 focus:ring-blue-300 font-bold text-gray-700" placeholder="0" />
+                      </div>
+                      <div className="w-full md:w-auto flex justify-end md:self-end md:mb-1">
+                        <button onClick={() => handleDeleteItem(setAccounts, acc.id)} className="p-2.5 text-red-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"><Trash2 size={20}/></button>
+                      </div>
+                   </div>
+                 ))}
+                 <button onClick={() => handleAddItem(setAccounts, { name: '', balance: 0 })} className="w-full py-4 mt-2 border-2 border-dashed border-blue-200 text-blue-600 hover:bg-blue-50 rounded-xl font-bold flex justify-center items-center gap-2 transition-colors"><Plus size={20}/> 新增帳戶 / 資產</button>
+               </div>
+            </div>
+
+            <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+              <div className="px-4 py-3 border-b bg-gray-50">
+                <h3 className="font-bold text-gray-800 flex items-center gap-2"><TrendingUp size={18} className="text-green-600"/> 結合「預算表」之預估即時餘額</h3>
+              </div>
+              <div className="p-2 overflow-x-auto">
+                 <table className="w-full text-sm text-left min-w-[500px]">
+                   <thead className="text-xs text-gray-500 bg-gray-100">
+                     <tr>
+                       <th className="px-4 py-3">帳戶名稱</th>
+                       <th className="px-4 py-3 text-right">目前設定餘額</th>
+                       <th className="px-4 py-3 text-right">預算表流入 (+)</th>
+                       <th className="px-4 py-3 text-right">預算表流出 (-)</th>
+                       <th className="px-4 py-3 text-right text-blue-700">預算執行後餘額</th>
+                     </tr>
+                   </thead>
+                   <tbody>
+                     {accountFlows.map(flow => (
+                       <tr key={flow.name} className="border-b border-gray-50 last:border-0 hover:bg-blue-50/30">
+                         <td className="px-4 py-3 font-bold text-gray-700">{flow.name || '(未命名)'}</td>
+                         <td className="px-4 py-3 text-right">${flow.initial.toLocaleString()}</td>
+                         <td className="px-4 py-3 text-right text-green-600">{flow.in > 0 ? `+${flow.in.toLocaleString()}` : '-'}</td>
+                         <td className="px-4 py-3 text-right text-red-500">{flow.out > 0 ? `-${flow.out.toLocaleString()}` : '-'}</td>
+                         <td className={`px-4 py-3 text-right font-black text-lg ${flow.projected >= 0 ? 'text-blue-600' : 'text-red-600'}`}>${flow.projected.toLocaleString()}</td>
+                       </tr>
+                     ))}
+                     {accountFlows.length === 0 && (
+                       <tr><td colSpan="5" className="text-center py-6 text-gray-400">目前預算表中沒有紀錄使用任何帳戶</td></tr>
+                     )}
+                   </tbody>
+                 </table>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {currentView === 'budget' && (
+          <>
+            <div className="flex flex-wrap gap-4 bg-white p-4 rounded-xl shadow-sm border border-gray-100">
+              <div className="flex-1 min-w-[200px]">
+                <label className="block text-sm font-semibold text-gray-600 mb-1 flex items-center gap-1"><Calendar size={16} /> 結算月份</label>
+                <input type="month" value={month} onChange={(e) => setMonth(e.target.value)} className="w-full p-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-300" />
+              </div>
+              <div className="flex-1 min-w-[200px]">
+                <label className="block text-sm font-semibold text-gray-600 mb-1 flex items-center gap-1"><DollarSign size={16} /> 本月總收入</label>
+                <div className="w-full p-2 border border-gray-100 bg-gray-50 rounded-lg text-lg font-bold text-purple-700">${totalIncome.toLocaleString()}</div>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+              <div className="lg:col-span-7 space-y-6">
+                <ExpenseTable title="本月收入清單" items={incomes} setter={setIncomes} total={totalIncome} icon={DollarSign} colorClass="border-yellow-200" handleUpdateItem={handleUpdateItem} handleDeleteItem={handleDeleteItem} handleAddItem={handleAddItem} accounts={accounts} />
+                
+                <MasterDebtTable masterDebts={masterDebts} setMasterDebts={setMasterDebts} setDebts={setDebts} setFixedExpenses={setFixedExpenses} handleUpdateItem={handleUpdateItem} handleDeleteItem={handleDeleteItem} handleAddItem={handleAddItem} totalMasterDebt={totalMasterDebt} accounts={accounts} />
+                
+                <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
+                  <ExpenseTable title="優先償還負債" items={debts} setter={setDebts} total={totalDebt} icon={TrendingUp} colorClass="border-red-200" handleUpdateItem={handleUpdateItem} handleDeleteItem={handleDeleteItem} handleAddItem={handleAddItem} accounts={accounts} />
+                  <ExpenseTable title="固定支出" items={fixedExpenses} setter={setFixedExpenses} total={totalFixed} icon={Wallet} colorClass="border-blue-200" handleUpdateItem={handleUpdateItem} handleDeleteItem={handleDeleteItem} handleAddItem={handleAddItem} accounts={accounts} />
+                </div>
+                
+                <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
+                  <ExpenseTable title="投資與理財" items={investments} setter={setInvestments} total={totalInvestment} icon={PieChart} colorClass="border-indigo-300" handleUpdateItem={handleUpdateItem} handleDeleteItem={handleDeleteItem} handleAddItem={handleAddItem} accounts={accounts} />
+                  <ExpenseTable title="生活費分配" items={livingExpenses} setter={setLivingExpenses} total={totalLiving} icon={Wallet} colorClass="border-green-200" handleUpdateItem={handleUpdateItem} handleDeleteItem={handleDeleteItem} handleAddItem={handleAddItem} accounts={accounts} />
+                </div>
+              
+                <div className="grid grid-cols-1 xl:grid-cols-2 gap-6 pt-6 border-t border-gray-200 mt-6">
+                  <ExpenseTable title="月底餘額盤點" items={balanceInventory} setter={setBalanceInventory} total={totalBalanceInv} icon={Wallet} colorClass="border-indigo-200" handleUpdateItem={handleUpdateItem} handleDeleteItem={handleDeleteItem} handleAddItem={handleAddItem} accounts={accounts} />
+                  <ExpenseTable title="餘額再分配" items={balanceAllocation} setter={setBalanceAllocation} total={totalBalanceAlloc} icon={TrendingUp} colorClass="border-teal-200" handleUpdateItem={handleUpdateItem} handleDeleteItem={handleDeleteItem} handleAddItem={handleAddItem} accounts={accounts} />
+                </div>
+
+                {accountFlows.length > 0 && (
+                  <div className="bg-white rounded-xl shadow-sm border border-blue-200 overflow-hidden mt-6 hidden lg:block">
+                    <div className="px-4 py-3 border-b bg-blue-50 flex items-center justify-between">
+                      <h3 className="font-bold flex items-center gap-2 text-blue-900"><Wallet size={18} className="text-blue-600" /> 🏦 各帳戶資金流向與即時餘額</h3>
+                    </div>
+                    <div className="p-2 overflow-x-auto">
+                      <table className="w-full text-sm text-left min-w-[500px]">
+                        <thead className="text-xs text-gray-500 bg-gray-50 border-b border-gray-100">
+                          <tr><th className="px-3 py-2 w-1/4">帳戶名稱</th><th className="px-3 py-2 text-right">目前餘額</th><th className="px-3 py-2 text-right">預計淨變動</th><th className="px-3 py-2 text-right text-blue-700 font-bold">預估即時餘額</th></tr>
+                        </thead>
+                        <tbody>
+                          {accountFlows.map((flow, idx) => (
+                            <tr key={idx} className="border-b border-gray-50 last:border-0 hover:bg-blue-50/30 transition-colors">
+                              <td className="px-3 py-2 font-bold text-gray-700">{flow.name || '(未選擇)'}</td>
+                              <td className="px-3 py-2 text-right">${flow.initial.toLocaleString()}</td>
+                              <td className={`px-3 py-2 text-right font-bold ${flow.net > 0 ? 'text-green-600' : flow.net < 0 ? 'text-red-500' : 'text-gray-500'}`}>{flow.net > 0 ? '+' : ''}{flow.net.toLocaleString()}</td>
+                              <td className={`px-3 py-2 text-right font-black ${flow.projected >= 0 ? 'text-blue-600' : 'text-red-600'}`}>${flow.projected.toLocaleString()}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <div className="lg:col-span-5 space-y-6">
+                <div className="bg-purple-50 p-5 rounded-xl shadow-sm border border-purple-200 sticky top-4">
+                  <h2 className="text-xl font-bold text-purple-900 mb-4 border-b border-purple-200 pb-2">結算計算看板</h2>
+                  <div className="space-y-4 text-sm md:text-base">
+                    <div className="bg-white p-3 rounded-lg shadow-sm">
+                      <p className="text-gray-500 mb-1 text-xs font-bold tracking-wider">STEP 1: 計算可用額度</p>
+                      <div className="flex justify-between items-center mb-1"><span>總收入</span><span>${totalIncome.toLocaleString()}</span></div>
+                      <div className="flex justify-between items-center text-red-500 mb-1"><span>- 負債</span><span>${totalDebt.toLocaleString()}</span></div>
+                      <div className="flex justify-between items-center text-blue-500 mb-1"><span>- 固定支出</span><span>${totalFixed.toLocaleString()}</span></div>
+                      <div className="flex justify-between items-center text-indigo-500 border-b pb-2 mb-2"><span>- 投資理財</span><span>${totalInvestment.toLocaleString()}</span></div>
+                      <div className="flex justify-between items-center font-bold text-purple-700 text-lg"><span>= 可用資金</span><span>${availableBudget.toLocaleString()}</span></div>
+                    </div>
+                    <div className="bg-white p-3 rounded-lg shadow-sm">
+                      <p className="text-gray-500 mb-2 text-xs font-bold tracking-wider flex justify-between">
+                        <span>STEP 2: 儲蓄目標設定</span>
+                        <span className="flex items-center gap-1">分配比例: <input type="number" value={savingsRate} onChange={(e) => setSavingsRate(Number(e.target.value))} className="w-12 border rounded px-1 text-center"/> %</span>
+                      </p>
+                      <div className="flex justify-between items-center font-bold text-green-600 text-lg"><span>應存金額</span><span>${savingsAmount.toLocaleString()}</span></div>
+                    </div>
+                    <div className="bg-white p-3 rounded-lg shadow-sm">
+                      <p className="text-gray-500 mb-1 text-xs font-bold tracking-wider">STEP 3: 生活費額度核算</p>
+                      <div className="flex justify-between items-center text-purple-700 mb-1"><span>可用資金</span><span>${availableBudget.toLocaleString()}</span></div>
+                      <div className="flex justify-between items-center text-green-600 border-b pb-2 mb-2"><span>- 應存金額</span><span>${savingsAmount.toLocaleString()}</span></div>
+                      <div className="flex justify-between items-center font-bold text-gray-800 text-lg mb-2"><span>= 剩餘生活費額度</span><span>${livingBudget.toLocaleString()}</span></div>
+                      <div className="mt-3 pt-3 border-t border-dashed border-gray-300">
+                        <div className="flex justify-between items-center text-sm"><span>表格已分配之生活費</span><span>${totalLiving.toLocaleString()}</span></div>
+                        <div className={`flex justify-between items-center font-bold text-sm mt-1 ${remainingLiving < 0 ? 'text-red-500' : 'text-gray-500'}`}>
+                          <span>核對差額 (透支/盈餘)</span><span>${remainingLiving.toLocaleString()}</span>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="bg-white p-3 rounded-lg shadow-sm">
+                      <p className="text-gray-500 mb-1 text-xs font-bold tracking-wider">STEP 4: 月底結餘再分配</p>
+                      <div className="flex justify-between items-center text-indigo-700 mb-1"><span>盤點總結餘</span><span>${totalBalanceInv.toLocaleString()}</span></div>
+                      <div className="flex justify-between items-center text-teal-600 border-b pb-2 mb-2"><span>- 已設定再分配</span><span>${totalBalanceAlloc.toLocaleString()}</span></div>
+                      <div className="flex justify-between items-center font-bold text-gray-800 text-lg mb-2">
+                        <span>= 尚未分配結餘</span>
+                        <span className={remainingBalanceAlloc < 0 ? 'text-red-500' : 'text-gray-800'}>${remainingBalanceAlloc.toLocaleString()}</span>
+                      </div>
+                    </div>
+
+                    <button onClick={saveCurrentMonth} className="w-full py-3 bg-purple-600 hover:bg-purple-700 text-white font-bold rounded-xl shadow-md flex justify-center items-center gap-2 transition-colors mt-4">
+                      <Save size={20} />儲存 {month} 結算明細
+                    </button>
+                  </div>
+                </div>
+
+                {accountFlows.length > 0 && (
+                  <div className="bg-white rounded-xl shadow-sm border border-blue-200 overflow-hidden mt-6 block lg:hidden">
+                    <div className="px-4 py-3 border-b bg-blue-50 flex items-center justify-between">
+                      <h3 className="font-bold flex items-center gap-2 text-blue-900"><Wallet size={18} className="text-blue-600" /> 各帳戶即時餘額</h3>
+                    </div>
+                    <div className="p-2 overflow-x-auto">
+                      <table className="w-full text-sm text-left">
+                        <thead className="text-xs text-gray-500 bg-gray-50 border-b border-gray-100">
+                          <tr><th className="px-3 py-2">帳戶名稱</th><th className="px-3 py-2 text-right">預計變動</th><th className="px-3 py-2 text-right text-blue-700">預估餘額</th></tr>
+                        </thead>
+                        <tbody>
+                          {accountFlows.map((flow, idx) => (
+                            <tr key={idx} className="border-b border-gray-50">
+                              <td className="px-3 py-2 font-bold text-gray-700">{flow.name || '(未選擇)'}</td>
+                              <td className={`px-3 py-2 text-right font-bold ${flow.net > 0 ? 'text-green-600' : flow.net < 0 ? 'text-red-500' : 'text-gray-500'}`}>{flow.net > 0 ? '+' : ''}{flow.net.toLocaleString()}</td>
+                              <td className="px-3 py-2 text-right font-black">${flow.projected.toLocaleString()}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+
+                {savedRecords.length > 0 && (
+                  <div className="bg-white p-5 rounded-xl shadow-sm border border-gray-200">
+                     <h2 className="text-lg font-bold text-gray-800 mb-4 flex items-center gap-2 border-b pb-2"><History size={20} className="text-purple-600"/>歷史結算紀錄</h2>
+                    <div className="space-y-3">
+                      {savedRecords.map(record => (
+                        <div key={record.id} className="p-3 border rounded-lg bg-gray-50 flex flex-col xl:flex-row justify-between items-start xl:items-center gap-4 group hover:border-purple-300 transition-colors">
+                          <div className="w-full">
+                            <div className="font-bold text-purple-700 text-lg mb-2">{record.month}</div>
+                            <div className="grid grid-cols-2 md:grid-cols-3 gap-x-2 gap-y-1 text-xs text-gray-600">
+                              <div>總收入: ${record.totalIncome.toLocaleString()}</div>
+                              <div>總負債: ${record.totalDebt.toLocaleString()}</div>
+                              <div>固定支出: ${record.totalFixed.toLocaleString()}</div>
+                              <div>投資理財: ${(record.totalInvestment || 0).toLocaleString()}</div>
+                              <div className="font-bold text-green-600">儲蓄: ${record.savingsAmount.toLocaleString()}</div>
+                              <div className="text-gray-500">生活費: ${record.totalLiving.toLocaleString()}</div>
+                              {record.totalBalanceInv > 0 && (
+                                <div className="col-span-2 md:col-span-3 mt-1 pt-1 border-t border-gray-100 flex justify-between font-bold text-indigo-600">
+                                  <span>月底結餘: ${record.totalBalanceInv.toLocaleString()}</span>
+                                  <span>再分配: ${record.totalBalanceAlloc?.toLocaleString() || 0}</span>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                          
+                          <div className="flex items-center gap-2 w-full xl:w-auto mt-2 xl:mt-0 pt-2 xl:pt-0 border-t xl:border-0 border-gray-200">
+                            {record.incomes && ( 
+                               <button onClick={() => loadBudgetRecord(record)} className="flex-1 xl:flex-none px-3 py-1.5 bg-white border border-purple-300 text-purple-700 text-sm font-bold rounded hover:bg-purple-100 transition-colors flex items-center justify-center gap-1"><Download size={14}/> 載入明細</button>
+                            )}
+                            <button onClick={() => deleteRecord(record.id)} className="p-1.5 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded transition-colors"><Trash2 size={18} /></button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          </>
+        )}
+        
+        {currentView === 'emergency' && <EmergencyFundView db={db} user={user} appId={appId} />}
+        {currentView === 'bonus' && <BonusAllocationView db={db} user={user} appId={appId} onImport={handleImportBonus} />}
+        {currentView === 'health' && <HealthCheckView db={db} user={user} appId={appId} savedMonthlyRecords={savedRecords} />}
+
+      </div>
+    </div>
+  );
+}
